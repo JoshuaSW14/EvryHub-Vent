@@ -8,11 +8,12 @@
 #include <Stepper.h>
 
 //DHT Sensor Config
-#define DHTPIN 4
+#define DHTPIN 16
 #define DHTTYPE DHT22
 DHT dht(DHTPIN, DHTTYPE);
 float humidity;
 float temperature;
+int desiredTemperature = 0;
 
 //LED Pins
 #define PIN_RED    23 // GIOP23
@@ -29,7 +30,6 @@ Stepper myStepper(stepsPerRevolution, 32, 33, 34, 35);
 WiFiClientSecure net = WiFiClientSecure();
 PubSubClient client(net);
 
-
 void openVent(){
   myStepper.step(stepsPerRevolution);
   delay(500);
@@ -40,7 +40,8 @@ void closeVent(){
   delay(500);
 }
 
-void configVent(){
+void configVent(String value){
+  desiredTemperature = value.toInt();
   delay(500);
 }
 
@@ -52,16 +53,23 @@ void messageHandler(char* topic, byte* payload, unsigned int length)
   StaticJsonDocument<200> doc;
   deserializeJson(doc, payload);
 
-  const char* device = doc["device"];
-  const char* action = doc["action"];
+  const char* d = doc["device"];
+  const char* a = doc["action"];
+  const char* v = doc["value"];
 
-  if(String(device) == "vent" && String(action) == "config"){
+  String device = String(d);
+  String action = String(a);
+  String value  = String(v);
+
+  Serial.printf("\n Device: %s | Action: %s \n", device, action);
+
+  if(device == "vent" && action == "config"){
     Serial.println("Configure EvryHub Vent");
-    configVent();
-  }else if(String(device) == "vent" && String(action) == "open"){
+    configVent(value);
+  }else if(device == "vent" && String(action) == "open"){
     Serial.println("Open Vent");
     openVent();
-  }else if(String(device) == "vent" && String(action) == "close"){
+  }else if(device == "vent" && String(action) == "close"){
     Serial.println("Close Vent");
     closeVent();
   }
@@ -69,7 +77,7 @@ void messageHandler(char* topic, byte* payload, unsigned int length)
 
 void connectAWS()
 {
-  WiFi.mode(WIFI_STA);
+  //WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
   Serial.println("Connecting to Wi-Fi");
@@ -118,12 +126,12 @@ void connectAWS()
   analogWrite(PIN_GREEN, 0);
   analogWrite(PIN_BLUE, 255);
 }
- 
+
 void publishMessage()
 {
   StaticJsonDocument<200> doc;
   doc["device"] = "vent";
-  doc["action"] = "temperature:"+String(temperature);
+  doc["action"] = "temperature:"+String(temperature)+";humidity:"+String(humidity);
   char jsonBuffer[512];
   serializeJson(doc, jsonBuffer);
 
@@ -154,6 +162,14 @@ void loop() {
 
   if (isnan(humidity) || isnan(temperature)) {
     Serial.println(F("Failed to read from DHT sensor!"));
+  }
+
+  if(desiredTemperature != 0){
+    if(temperature < desiredTemperature){
+      openVent();
+    }else{
+      closeVent();
+    }
   }
 
   publishMessage();
