@@ -1,75 +1,84 @@
 #include <Arduino.h>
 #include "secrets.h"
 #include <WiFiClientSecure.h>
+#include <WiFi.h>
+#include <ESPmDNS.h>
+#include <WiFiUdp.h>
+#include <ArduinoOTA.h>
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
-#include "Wifi.h"
-#include "DHT.h"
 #include <Stepper.h>
+#include "DHT.h"
 
-//DHT Sensor Config
-#define DHTPIN 16
+// AWS & WiFi Config
+#define AWS_IOT_PUBLISH_TOPIC "evryhub/vent"
+#define AWS_IOT_SUBSCRIBE_TOPIC "evryhub/vent/sub"
+WiFiClientSecure net = WiFiClientSecure();
+PubSubClient client(net);
+
+// LED Pin (digital)
+#define LED_PIN 21
+
+// DHT Sensor
+#define DHTPIN 33
 #define DHTTYPE DHT22
+
+// Air Quality Sensor
+#define MQ_PIN 32
+
+// Button Pins (digital)
+#define openButtonPin 23
+#define closeButtonPin 22
+
+// Stepper Configuration (digital)
+int stepsPerRevolution = 500;
+Stepper myStepper(stepsPerRevolution, 17, 18, 5, 19); // IN1, IN3, IN2, IN4
+
+// DHT
 DHT dht(DHTPIN, DHTTYPE);
 float humidity;
 float temperature;
 int desiredTemperature = 0;
+int mqValue;
 
-//LED Pins
-#define PIN_RED    23 // GIOP23
-#define PIN_GREEN  22 // GIOP22
-#define PIN_BLUE   21 // GIOP21
-
-//Stepper Configuration
-const int stepsPerRevolution = 200;
-Stepper myStepper(stepsPerRevolution, 32, 33, 34, 35);
-
-//AWS & WiFi Config
-#define AWS_IOT_PUBLISH_TOPIC   "evryhub/vent"
-#define AWS_IOT_SUBSCRIBE_TOPIC "evryhub/vent"
-WiFiClientSecure net = WiFiClientSecure();
-PubSubClient client(net);
-
-void openVent(){
-  myStepper.step(stepsPerRevolution);
-  delay(500);
-}
-
-void closeVent(){
-  myStepper.step(-stepsPerRevolution);
-  delay(500);
-}
-
-void configVent(String value){
-  desiredTemperature = value.toInt();
-  delay(500);
-}
-
-void messageHandler(char* topic, byte* payload, unsigned int length)
+void openVent()
 {
-  Serial.print("incoming: ");
-  Serial.println(topic);
+  myStepper.step(stepsPerRevolution);
+}
 
+void closeVent()
+{
+  myStepper.step(-stepsPerRevolution);
+}
+
+void configVent(int temp)
+{
+  desiredTemperature = temp;
+}
+
+void messageHandler(char *topic, byte *payload, unsigned int length)
+{
   StaticJsonDocument<200> doc;
   deserializeJson(doc, payload);
 
-  const char* d = doc["device"];
-  const char* a = doc["action"];
-  const char* v = doc["value"];
+  const char *device = doc["device"];
+  const char *action = doc["action"];
+  const char *value = doc["value"];
 
-  String device = String(d);
-  String action = String(a);
-  String value  = String(v);
+  Serial.printf("\n Device: %s | Action: %s | Value: %s\n", String(device), String(action), String(value));
 
-  Serial.printf("\n Device: %s | Action: %s \n", device, action);
-
-  if(device == "vent" && action == "config"){
+  if (String(device) == "vent" && String(action) == "config")
+  {
     Serial.println("Configure EvryHub Vent");
-    configVent(value);
-  }else if(device == "vent" && String(action) == "open"){
+    configVent(atoi(value));
+  }
+  else if (String(device) == "vent" && String(action) == "open")
+  {
     Serial.println("Open Vent");
     openVent();
-  }else if(device == "vent" && String(action) == "close"){
+  }
+  else if (String(device) == "vent" && String(action) == "close")
+  {
     Serial.println("Close Vent");
     closeVent();
   }
@@ -77,22 +86,6 @@ void messageHandler(char* topic, byte* payload, unsigned int length)
 
 void connectAWS()
 {
-  //WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-
-  Serial.println("Connecting to Wi-Fi");
-
-  while (WiFi.status() != WL_CONNECTED)
-  {
-    delay(500);
-    Serial.print(".");
-  }
-
-  // LED Turns Green When Connected to WiFi
-  analogWrite(PIN_RED, 0);
-  analogWrite(PIN_GREEN, 255);
-  analogWrite(PIN_BLUE, 0);
-
   // Configure WiFiClientSecure to use the AWS IoT device credentials
   net.setCACert(AWS_CERT_CA);
   net.setCertificate(AWS_CERT_CRT);
@@ -116,62 +109,139 @@ void connectAWS()
     Serial.println("AWS IoT Timeout!");
     return;
   }
+  digitalWrite(LED_PIN, LOW);
 
   // Subscribe to a topic
   client.subscribe(AWS_IOT_SUBSCRIBE_TOPIC);
   Serial.println("AWS IoT Connected!");
-
-  // LED Turns Blue When Connected to AWS
-  analogWrite(PIN_RED, 0);
-  analogWrite(PIN_GREEN, 0);
-  analogWrite(PIN_BLUE, 255);
 }
 
 void publishMessage()
 {
   StaticJsonDocument<200> doc;
-  doc["device"] = "vent";
-  doc["action"] = "temperature:"+String(temperature)+";humidity:"+String(humidity);
   char jsonBuffer[512];
-  serializeJson(doc, jsonBuffer);
+  if (isnan(humidity) || isnan(temperature))
+  {
+    Serial.println(F("Failed to read from DHT sensor!"));
+  }
+  else
+  {
+    StaticJsonDocument<200> doc;
+    doc["device"] = "vent";
+    doc["action"] = "temperature";
+    doc["value"] = String(temperature);
+    serializeJson(doc, jsonBuffer);
+    client.publish(AWS_IOT_PUBLISH_TOPIC, jsonBuffer);
 
+    doc["device"] = "vent";
+    doc["action"] = "humidity";
+    doc["value"] = String(humidity);
+    serializeJson(doc, jsonBuffer);
+    client.publish(AWS_IOT_PUBLISH_TOPIC, jsonBuffer);
+  }
+
+  
+  doc["device"] = "vent";
+  doc["action"] = "mq";
+  doc["value"] = String(mqValue);
+  serializeJson(doc, jsonBuffer);
   client.publish(AWS_IOT_PUBLISH_TOPIC, jsonBuffer);
 }
 
-void setup() {
+void otaSetup()
+{
+  Serial.println("Booting");
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
+  while (WiFi.status() != WL_CONNECTED)
+  {
+    digitalWrite(LED_PIN, HIGH);
+    delay(500);
+    digitalWrite(LED_PIN, LOW);
+    Serial.print(".");
+  }
+  digitalWrite(LED_PIN, HIGH);
+
+  ArduinoOTA
+      .onStart([]()
+               {
+      String type;
+      if (ArduinoOTA.getCommand() == U_FLASH)
+        type = "sketch";
+      else // U_SPIFFS
+        type = "filesystem";
+
+      // NOTE: if updating SPIFFS this would be the place to unmount SPIFFS using SPIFFS.end()
+      Serial.println("Start updating " + type); })
+      .onEnd([]()
+             { Serial.println("\nEnd"); })
+      .onProgress([](unsigned int progress, unsigned int total)
+                  { Serial.printf("Progress: %u%%\r", (progress / (total / 100))); })
+      .onError([](ota_error_t error)
+               {
+      Serial.printf("Error[%u]: ", error);
+      if (error == OTA_AUTH_ERROR) Serial.println("Auth Failed");
+      else if (error == OTA_BEGIN_ERROR) Serial.println("Begin Failed");
+      else if (error == OTA_CONNECT_ERROR) Serial.println("Connect Failed");
+      else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed");
+      else if (error == OTA_END_ERROR) Serial.println("End Failed"); });
+
+  ArduinoOTA.begin();
+
+  Serial.println("Ready");
+  Serial.print("IP address: ");
+  Serial.println(WiFi.localIP());
+}
+
+void checkInput()
+{
+  while (digitalRead(openButtonPin) == LOW)
+  {
+    myStepper.step(stepsPerRevolution);
+  }
+
+  while (digitalRead(closeButtonPin) == LOW)
+  {
+    myStepper.step(-stepsPerRevolution);
+  }
+}
+
+void setup()
+{
   myStepper.setSpeed(60);
   Serial.begin(115200);
 
-  pinMode(PIN_RED, OUTPUT);
-  pinMode(PIN_GREEN, OUTPUT);
-  pinMode(PIN_BLUE, OUTPUT);
+  pinMode(openButtonPin, INPUT_PULLUP);
+  pinMode(closeButtonPin, INPUT_PULLUP);
+  pinMode(LED_PIN, OUTPUT);
 
-  // LED Turns RED When Device is Turned On
-  analogWrite(PIN_RED, 255);
-  analogWrite(PIN_GREEN, 0);
-  analogWrite(PIN_BLUE, 0);
-  
   dht.begin();
-  
+
+  otaSetup();
   connectAWS();
 }
 
-void loop() {
+void loop()
+{
+  ArduinoOTA.handle();
   humidity = dht.readHumidity();
   temperature = dht.readTemperature();
+  mqValue = analogRead(MQ_PIN);
 
-  if (isnan(humidity) || isnan(temperature)) {
-    Serial.println(F("Failed to read from DHT sensor!"));
-  }
+  // if (desiredTemperature != 0)
+  // {
+  //   if (temperature < desiredTemperature)
+  //   {
+  //     openVent();
+  //   }
+  //   else
+  //   {
+  //     closeVent();
+  //   }
+  // }
 
-  if(desiredTemperature != 0){
-    if(temperature < desiredTemperature){
-      openVent();
-    }else{
-      closeVent();
-    }
-  }
-
+  checkInput();
   publishMessage();
   client.loop();
   delay(5000);
