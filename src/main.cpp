@@ -15,6 +15,8 @@ float humidity;
 float temperature;
 int desiredTemperature = 0;
 
+volatile bool openButtonState;
+
 //LED Pins
 #define PIN_RED    23 // GIOP23
 #define PIN_GREEN  22 // GIOP22
@@ -29,6 +31,12 @@ Stepper myStepper(stepsPerRevolution, 32, 33, 34, 35);
 #define AWS_IOT_SUBSCRIBE_TOPIC "evryhub/vent"
 WiFiClientSecure net = WiFiClientSecure();
 PubSubClient client(net);
+
+// ***********************************************************
+void IRAM_ATTR openButtonRising()
+{
+  openButtonState = true;
+}
 
 void openVent(){
   myStepper.step(stepsPerRevolution);
