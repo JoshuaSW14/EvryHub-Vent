@@ -1,3 +1,11 @@
+// Software Capstone - EvryHub Vent
+//
+// @author  Joshua Symons-Webb
+// @id      000812836
+//
+// I, Joshua Symons-Webb, 000812836 certify that this material is my original work. No
+// other person's work has been used without due acknowledgement.
+
 #include <Arduino.h>
 #include "secrets.h"
 #include <WiFiClientSecure.h>
@@ -31,7 +39,7 @@ PubSubClient client(net);
 #define closeButtonPin 22
 
 // Stepper Configuration (digital)
-int stepsPerRevolution = 500;
+int stepsPerRevolution = 300;
 Stepper myStepper(stepsPerRevolution, 17, 18, 5, 19); // IN1, IN3, IN2, IN4
 
 // DHT
@@ -41,21 +49,25 @@ float temperature;
 int desiredTemperature = 0;
 int mqValue;
 
-void openVent()
-{
+// ***********************************************************
+void openVent(){
   myStepper.step(stepsPerRevolution);
+  delay(2000);
 }
 
-void closeVent()
-{
+// ***********************************************************
+void closeVent(){
   myStepper.step(-stepsPerRevolution);
+  delay(2000);
 }
 
-void configVent(int temp)
-{
-  desiredTemperature = temp;
+// ***********************************************************
+void configVent(String value){
+  desiredTemperature = value.toInt();
+  delay(500);
 }
 
+// ***********************************************************
 void messageHandler(char *topic, byte *payload, unsigned int length)
 {
   StaticJsonDocument<200> doc;
@@ -70,7 +82,7 @@ void messageHandler(char *topic, byte *payload, unsigned int length)
   if (String(device) == "vent" && String(action) == "config")
   {
     Serial.println("Configure EvryHub Vent");
-    configVent(atoi(value));
+    configVent(String(value));
   }
   else if (String(device) == "vent" && String(action) == "open")
   {
@@ -84,6 +96,7 @@ void messageHandler(char *topic, byte *payload, unsigned int length)
   }
 }
 
+// ***********************************************************
 void connectAWS()
 {
   // Configure WiFiClientSecure to use the AWS IoT device credentials
@@ -116,6 +129,7 @@ void connectAWS()
   Serial.println("AWS IoT Connected!");
 }
 
+// ***********************************************************
 void publishMessage()
 {
   StaticJsonDocument<200> doc;
@@ -140,7 +154,6 @@ void publishMessage()
     client.publish(AWS_IOT_PUBLISH_TOPIC, jsonBuffer);
   }
 
-  
   doc["device"] = "vent";
   doc["action"] = "mq";
   doc["value"] = String(mqValue);
@@ -148,9 +161,9 @@ void publishMessage()
   client.publish(AWS_IOT_PUBLISH_TOPIC, jsonBuffer);
 }
 
-void otaSetup()
+// ***********************************************************
+void wifiSetup()
 {
-  Serial.println("Booting");
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
@@ -162,7 +175,11 @@ void otaSetup()
     Serial.print(".");
   }
   digitalWrite(LED_PIN, HIGH);
+}
 
+// ***********************************************************
+void otaSetup()
+{
   ArduinoOTA
       .onStart([]()
                {
@@ -194,8 +211,13 @@ void otaSetup()
   Serial.println(WiFi.localIP());
 }
 
+// ***********************************************************
 void checkInput()
 {
+  humidity = dht.readHumidity();
+  temperature = dht.readTemperature();
+  mqValue = analogRead(MQ_PIN);
+
   while (digitalRead(openButtonPin) == LOW)
   {
     myStepper.step(stepsPerRevolution);
@@ -207,6 +229,7 @@ void checkInput()
   }
 }
 
+// ***********************************************************
 void setup()
 {
   myStepper.setSpeed(60);
@@ -218,29 +241,15 @@ void setup()
 
   dht.begin();
 
+  wifiSetup();
   otaSetup();
   connectAWS();
 }
 
+// ***********************************************************
 void loop()
 {
   ArduinoOTA.handle();
-  humidity = dht.readHumidity();
-  temperature = dht.readTemperature();
-  mqValue = analogRead(MQ_PIN);
-
-  // if (desiredTemperature != 0)
-  // {
-  //   if (temperature < desiredTemperature)
-  //   {
-  //     openVent();
-  //   }
-  //   else
-  //   {
-  //     closeVent();
-  //   }
-  // }
-
   checkInput();
   publishMessage();
   client.loop();
